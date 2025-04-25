@@ -8,15 +8,6 @@ services:
     networks:
       - app_network
 
-  client-builder:
-    build:
-      context: ./client
-      dockerfile: Dockerfile
-    networks:
-      - app_network
-    volumes:
-      - ./client/dist:/dist
-
 networks:
   app_network:
     driver: bridge
