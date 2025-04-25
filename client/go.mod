@@ -3,6 +3,7 @@ module clickcontrolapp/client
 go 1.24.2
 
 require (
+	fyne.io/fyne v1.4.3
 	fyne.io/fyne/v2 v2.6.0
 	github.com/go-vgo/robotgo v0.110.7
 	github.com/gorilla/websocket v1.5.3
@@ -15,7 +16,6 @@ require (
 	github.com/hack-pad/go-indexeddb v0.3.2 // indirect
 	github.com/hack-pad/safejs v0.1.0 // indirect
 	github.com/jeandeaual/go-locale v0.0.0-20241217141322-fcc2cadd6f08 // indirect
-	github.com/kr/text v0.1.0 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/nicksnyder/go-i18n/v2 v2.5.1 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
