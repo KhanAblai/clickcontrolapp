@@ -36,7 +36,7 @@ var (
 	state      AppState
 	mainWindow fyne.Window
 	a          fyne.App
-	serverURL  = "ws://localhost:8765/ws"
+	serverURL  = "ws://64.227.113.220:8765/ws"
 
 	stateMu sync.RWMutex
 

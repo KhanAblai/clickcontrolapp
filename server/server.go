@@ -12,26 +12,19 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin:      func(r *http.Request) bool { return true },
-	HandshakeTimeout: 60 * time.Second,
-	ReadBufferSize:   1024,
-	WriteBufferSize:  1024,
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 type Client struct {
-	Conn    *websocket.Conn
-	ID      string
-	Hotkeys map[string]string
-}
-type Command struct {
-	Type string  `json:"type"`
-	RelX float64 `json:"relX"`
-	RelY float64 `json:"relY"`
+	Conn     *websocket.Conn
+	ID       string
+	LastSeen time.Time
+	Hotkeys  map[string]string
 }
 
 var (
 	clients   = make(map[string]*Client)
-	clientsMu sync.Mutex
+	clientsMu sync.RWMutex
 )
 
 func main() {
@@ -40,77 +33,103 @@ func main() {
 		w.Write([]byte("WebSocket Server"))
 	})
 
+	go cleanupClients()
+
 	log.Println("Сервер запущен на :8765")
 	log.Fatal(http.ListenAndServe(":8765", nil))
 }
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
-	conn, _ := upgrader.Upgrade(w, r, nil)
-	defer conn.Close()
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Ошибка подключения: %v", err)
+		return
+	}
 
 	client := &Client{
-		Conn: conn,
-		ID:   uuid.New().String(),
+		Conn:     conn,
+		ID:       uuid.New().String(),
+		LastSeen: time.Now(),
+		Hotkeys:  make(map[string]string),
 	}
 
 	clientsMu.Lock()
 	clients[client.ID] = client
 	clientsMu.Unlock()
 
+	log.Printf("Новое подключение: %s", client.ID)
+
+	defer func() {
+		clientsMu.Lock()
+		delete(clients, client.ID)
+		clientsMu.Unlock()
+		conn.Close()
+	}()
+
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
+			log.Printf("Отключение клиента %s: %v", client.ID, err)
 			break
 		}
 
 		var data map[string]interface{}
-		json.Unmarshal(msg, &data)
+		if err := json.Unmarshal(msg, &data); err != nil {
+			continue
+		}
 
-		if data["type"] == "sync_click" {
-			broadcastClick(data)
+		switch data["type"] {
+		case "sync_click":
+			handleSyncClick(client, data)
+		case "ping":
+			client.LastSeen = time.Now()
+		case "update_hotkey":
+			handleHotkeyUpdate(client, data)
 		}
 	}
 }
+func handleSyncClick(sender *Client, data map[string]interface{}) {
+	relX, _ := data["relX"].(float64)
+	relY, _ := data["relY"].(float64)
 
-func broadcastClick(data map[string]interface{}) {
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
+	msg := map[string]interface{}{
+		"type": "execute_click",
+		"relX": relX,
+		"relY": relY,
+	}
 
-	log.Printf("[SERVER] Broadcasting click: %v", data)
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
 
 	for _, client := range clients {
-		client.Conn.WriteJSON(map[string]interface{}{
-			"type": "execute_click",
-			"relX": data["relX"],
-			"relY": data["relY"],
-		})
+		if client.ID == sender.ID {
+			continue
+		}
+
+		// Исправлено: убрана лишняя скобка
+		client.Conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+
+		// Исправлено: используем локальную переменную client из цикла
+		if err := client.Conn.WriteJSON(msg); err != nil {
+			log.Printf("Ошибка отправки клиенту %s: %v", client.ID, err)
+			client.Conn.Close()
+			delete(clients, client.ID)
+		}
 	}
 }
 
-func updateClientHotkeys(c *Client, data map[string]interface{}) {
-	action := data["action"].(string)
-	key := data["key"].(string)
-	c.Hotkeys[action] = key
-}
-func handleCommand(client *Client, data map[string]interface{}) {
-	switch data["type"] {
-	case "update_hotkey":
-		action, ok1 := data["action"].(string)
-		key, ok2 := data["key"].(string)
-		if ok1 && ok2 {
-			client.Hotkeys[action] = key
-			log.Printf("Обновление хоткея: %s -> %s", action, key)
-			broadcastHotkeyUpdate(client, action, key)
-		}
-	case "relative_command":
-		relX, _ := data["relX"].(float64)
-		relY, _ := data["relY"].(float64)
-		handleRelativeCommand(relX, relY)
+func handleHotkeyUpdate(client *Client, data map[string]interface{}) {
+	action, ok1 := data["action"].(string)
+	key, ok2 := data["key"].(string)
+	if ok1 && ok2 {
+		client.Hotkeys[action] = key
+		broadcastHotkeyUpdate(client, action, key)
 	}
 }
+
 func broadcastHotkeyUpdate(sender *Client, action, key string) {
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
+	clientsMu.RLock()
+	defer clientsMu.RUnlock()
 
 	for _, client := range clients {
 		if client.ID != sender.ID {
@@ -123,20 +142,20 @@ func broadcastHotkeyUpdate(sender *Client, action, key string) {
 		}
 	}
 }
-func handleRelativeCommand(relX, relY float64) {
-	log.Printf("[СЕРВЕР] Получена команда: relX=%.2f, relY=%.2f", relX, relY)
-	clientsMu.Lock()
-	defer clientsMu.Unlock()
 
-	for id, client := range clients {
-		log.Printf("[СЕРВЕР] Отправка клиенту %s: X=%.2f, Y=%.2f", id, relX, relY)
-		err := client.Conn.WriteJSON(map[string]interface{}{
-			"type": "relative_click",
-			"relX": relX,
-			"relY": relY,
-		})
-		if err != nil {
-			log.Printf("[СЕРВЕР] Ошибка отправки клиенту %s: %v", id, err)
+func cleanupClients() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		clientsMu.Lock()
+		for id, client := range clients {
+			if time.Since(client.LastSeen) > 2*time.Minute {
+				client.Conn.Close()
+				delete(clients, id)
+				log.Printf("Удален неактивный клиент: %s", id)
+			}
 		}
+		clientsMu.Unlock()
 	}
 }
